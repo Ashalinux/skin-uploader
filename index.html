@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>NPC Skin Uploader</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #14161c;
+    --panel: #1c1f28;
+    --border: #2c303c;
+    --text: #e8eaee;
+    --text-dim: #9aa1b0;
+    --accent: #6c8cff;
+    --ok: #3fb950;
+    --err: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(circle at 30% 20%, #1c2030, var(--bg));
+    font-family: "Segoe UI", system-ui, sans-serif; color: var(--text); padding: 24px;
+  }
+  main { width: 100%; max-width: 620px; }
+  h1 { font-size: 1.3em; margin: 0 0 4px; }
+  p.hint { color: var(--text-dim); font-size: 0.88em; margin: 0 0 22px; line-height: 1.5; }
+
+  #dropzone {
+    border: 2px dashed var(--border); border-radius: 14px; padding: 40px 20px; text-align: center;
+    cursor: pointer; transition: border-color 0.15s ease, background 0.15s ease; background: var(--panel);
+  }
+  #dropzone.drag { border-color: var(--accent); background: #1f2436; }
+  #dropzone p { margin: 0; color: var(--text-dim); }
+  #dropzone .big { font-size: 1.05em; color: var(--text); margin-bottom: 6px; }
+  #preview { max-width: 128px; image-rendering: pixelated; margin-bottom: 14px; border-radius: 8px; display: none; }
+
+  .options {
+    display: flex; gap: 16px; align-items: center; margin: 18px 0; font-size: 0.88em; color: var(--text-dim);
+    flex-wrap: wrap;
+  }
+  .options label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+
+  button {
+    width: 100%; padding: 13px; border-radius: 10px; border: none; background: var(--accent); color: #fff;
+    font-size: 0.95em; font-weight: 600; cursor: pointer; margin-top: 4px;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  #status { margin-top: 14px; font-size: 0.85em; min-height: 1.2em; }
+  #status.ok { color: var(--ok); }
+  #status.err { color: var(--err); }
+
+  .result { margin-top: 18px; display: none; }
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 0.8em; color: var(--text-dim); margin-bottom: 5px; }
+  .row { display: flex; gap: 8px; }
+  textarea {
+    width: 100%; resize: vertical; min-height: 64px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; color: var(--text); font-family: Consolas, monospace; font-size: 0.78em; padding: 10px;
+  }
+  .copy-btn {
+    flex-shrink: 0; width: auto; padding: 0 16px; background: var(--panel); border: 1px solid var(--border);
+    color: var(--text); margin-top: 0;
+  }
+  .snippet {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px;
+    font-family: Consolas, monospace; font-size: 0.78em; white-space: pre-wrap; word-break: break-all; color: var(--text-dim);
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>NPC Skin Uploader</h1>
+  <p class="hint">Skin-PNG hierher ziehen oder klicken, um es auszuwählen. Die Datei wird direkt aus diesem
+  Browser an die öffentliche MineSkin-API hochgeladen (keine eigene Server-Infrastruktur nötig) - danach
+  kannst du den fertigen Base64-Texture-Wert (und die Signatur) direkt in <code>skin.texture</code> /
+  <code>skin.signature</code> in <code>npc_config.yml</code> einfügen.</p>
+
+  <div id="dropzone">
+    <img id="preview" alt="Vorschau">
+    <p class="big">Skin hierher ziehen</p>
+    <p>oder klicken, um eine Datei auszuwählen</p>
+    <input type="file" id="fileInput" accept="image/png" hidden>
+  </div>
+
+  <div class="options">
+    <label><input type="radio" name="variant" value="classic" checked> Classic (Steve)</label>
+    <label><input type="radio" name="variant" value="slim"> Slim (Alex)</label>
+  </div>
+
+  <button id="uploadBtn" disabled>Skin hochladen</button>
+  <div id="status"></div>
+
+  <div class="result" id="result">
+    <div class="field">
+      <label>skin.texture (in npc_config.yml einfügen)</label>
+      <div class="row">
+        <textarea id="textureValue" readonly></textarea>
+      </div>
+      <button class="copy-btn" data-target="textureValue">Kopieren</button>
+    </div>
+    <div class="field">
+      <label>skin.signature</label>
+      <div class="row">
+        <textarea id="signatureValue" readonly></textarea>
+      </div>
+      <button class="copy-btn" data-target="signatureValue">Kopieren</button>
+    </div>
+    <div class="field">
+      <label>Fertiger YAML-Ausschnitt</label>
+      <div class="snippet" id="yamlSnippet"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+(function () {
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('fileInput');
+  const preview = document.getElementById('preview');
+  const uploadBtn = document.getElementById('uploadBtn');
+  const status = document.getElementById('status');
+  const result = document.getElementById('result');
+  const textureValue = document.getElementById('textureValue');
+  const signatureValue = document.getElementById('signatureValue');
+  const yamlSnippet = document.getElementById('yamlSnippet');
+
+  let selectedFile = null;
+
+  function setStatus(text, kind) {
+    status.textContent = text;
+    status.className = kind || '';
+  }
+
+  function selectFile(file) {
+    if (!file || file.type !== 'image/png') {
+      setStatus('Bitte eine PNG-Datei auswählen.', 'err');
+      return;
+    }
+    selectedFile = file;
+    preview.src = URL.createObjectURL(file);
+    preview.style.display = 'inline-block';
+    uploadBtn.disabled = false;
+    setStatus('');
+    result.style.display = 'none';
+  }
+
+  dropzone.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', (e) => selectFile(e.target.files[0]));
+
+  ['dragenter', 'dragover'].forEach((eventName) => {
+    dropzone.addEventListener(eventName, (e) => {
+      e.preventDefault();
+      dropzone.classList.add('drag');
+    });
+  });
+  ['dragleave', 'drop'].forEach((eventName) => {
+    dropzone.addEventListener(eventName, (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('drag');
+    });
+  });
+  dropzone.addEventListener('drop', (e) => {
+    const file = e.dataTransfer.files[0];
+    selectFile(file);
+  });
+
+  uploadBtn.addEventListener('click', async () => {
+    if (!selectedFile) return;
+    const variant = document.querySelector('input[name="variant"]:checked').value;
+
+    uploadBtn.disabled = true;
+    setStatus('Lädt hoch, bitte warten (kann bei Rate-Limits bis zu ~10s dauern)...');
+    result.style.display = 'none';
+
+    const formData = new FormData();
+    formData.append('file', selectedFile, selectedFile.name);
+    formData.append('variant', variant);
+
+    try {
+      const response = await fetch('https://api.mineskin.org/generate/upload', {
+        method: 'POST',
+        body: formData
+      });
+      const json = await response.json();
+
+      if (!response.ok || json.success === false) {
+        const message = json.error || (json.errorCode === 'rate_limit'
+          ? 'Rate-Limit erreicht - kurz warten und erneut versuchen.'
+          : 'Unbekannter Fehler.');
+        setStatus('Fehlgeschlagen: ' + message, 'err');
+        uploadBtn.disabled = false;
+        return;
+      }
+
+      const texture = json.data.texture;
+      textureValue.value = texture.value;
+      signatureValue.value = texture.signature;
+      yamlSnippet.textContent =
+        '    skin:\n      texture: "' + texture.value + '"\n      signature: "' + texture.signature + '"';
+
+      result.style.display = 'block';
+      setStatus('Erfolgreich hochgeladen.', 'ok');
+    } catch (err) {
+      setStatus('Netzwerkfehler: ' + err.message, 'err');
+    } finally {
+      uploadBtn.disabled = false;
+    }
+  });
+
+  document.querySelectorAll('.copy-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const target = document.getElementById(btn.dataset.target);
+      target.select();
+      navigator.clipboard.writeText(target.value).then(() => {
+        const original = btn.textContent;
+        btn.textContent = 'Kopiert!';
+        setTimeout(() => (btn.textContent = original), 1200);
+      });
+    });
+  });
+})();
+</script>
+</body>
+</html>
